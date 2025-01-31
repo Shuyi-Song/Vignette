@@ -1,0 +1,522 @@
+---
+title: "Simulation "
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+# 1. Dataset
+
+Vignettes only (Yunnan 2017, NCD 2018, Three Province2015)
+
+# 2. Data Analysis
+
+## 2.0 Import Data
+
+```{r}
+install.packages("Hmisc")
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(haven)
+visit_data <- read_dta("data-raw/vig_clean_all.dta")
+
+```
+
+## 2.1 Basic Information Tables
+
+### 2.1.1 Table 1 Summary of correct/partially diagnosis/checklist (N=2564: Angina = 980, Diarrhea = 627, TB = 319, Hypertension = 638)
+
+```{r}
+
+# descriptive analysis
+
+library(gtsummary)
+library("dplyr")
+
+# create new variables needed for the analysis
+visit_data$disease_num <- factor(visit_data$disease_num,
+                                          levels = c(1, 2, 3, 4),
+                                          labels = c("Angina", "Diarrhea", "TB", "Hypertension"))
+
+# select the variables
+visit_vars <- visit_data %>%
+                select(corrdiag, pcorrdiag, wrongdiag, nrq, arq )
+visit_var <- visit_data %>%
+                select(corrdiag, pcorrdiag, wrongdiag, nrq, arq, disease_num )
+
+# All sample
+all_visit <- visit_vars %>%
+                  tbl_summary(
+                    missing = "no",
+                    type = list(
+                                corrdiag ~ "dichotomous",
+                                pcorrdiag ~ "dichotomous",
+                                wrongdiag ~ "dichotomous",
+                                nrq ~ "continuous",
+                                arq ~ "continuous"
+                                ),
+                statistic = list(
+                                all_continuous() ~ "{mean}",
+                                all_dichotomous() ~ "{p}%"
+                                ),
+                digits = list(
+                                all_continuous() ~ 2,
+                                all_dichotomous() ~ 1
+                              ),
+                label = list(
+                                corrdiag ~ "Correct diagnosis",
+                                pcorrdiag ~ "Partially correct diagnosis",
+                                wrongdiag ~ "Wrong diagnosis",
+                                nrq ~ "The number of recommended checklist items asked by the provider",
+                                arq ~ "The ratio of recommended checklist items asked by the provider"
+                                )
+                ) %>%
+  add_ci(include = everything(), pattern = "{stat} ({ci})") %>%
+  modify_footnote(all_stat_cols() ~ "Notes: Mean for continuous variables; proportion for categorical variables.")
+
+
+
+# Sub-Sampel
+sub_visit <- visit_var %>%
+                  tbl_summary(
+                    missing = "no", by = disease_num,
+                    type = list(
+                                corrdiag ~ "dichotomous",
+                                pcorrdiag ~ "dichotomous",
+                                wrongdiag ~ "dichotomous",
+                                nrq ~ "continuous",
+                                arq ~ "continuous"
+                                ),
+                statistic = list(
+                                all_continuous() ~ "{mean}",
+                                all_dichotomous() ~ "{p}%"
+                                ),
+                digits = list(
+                                all_continuous() ~ 2,
+                                all_dichotomous() ~ 1
+                              ),
+                label = list(
+                                corrdiag ~ "Correct diagnosis",
+                                pcorrdiag ~ "Partially correct diagnosis",
+                                wrongdiag ~ "Wrong diagnosis",
+                                nrq ~ "The number of recommended checklist items asked by the provider",
+                                arq ~ "The ratio of recommended checklist items asked by the provider"
+                                )
+                ) %>%
+  add_ci(include = everything(), pattern = "{stat} ({ci})") %>%
+  modify_footnote(all_stat_cols() ~ "Notes: Mean for continuous variables; proportion for categorical variables.") 
+
+
+visit_tbl <- tbl_merge(list(all_visit, sub_visit), tab_spanner = c("**Full Sample**", "**Case**")) %>% modify_caption("**Table 1. Summary of consultations**")
+
+visit_tbl
+```
+
+### 2.1.2 Figure 1 Simulation
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# Generate the new variable `diagnosis`
+visit_data <- visit_data %>%
+  mutate(
+    diagnosis = case_when(
+      corrdiag == 1 ~ 2,          # Correct Diagnosis
+      pcorrdiag == 1 ~ 1,         # Partially Correct Diagnosis
+      wrongdiag == 1 ~ 0,         # Wrong Diagnosis
+      TRUE ~ NA_real_             # Handle cases where none of the above are true
+    )
+  )
+
+# Function to compute modal diagnosis
+compute_modal_diagnosis <- function(group) {
+  modal_value <- as.numeric(names(sort(table(group$diagnosis), decreasing = TRUE))[1])
+  return(modal_value)
+}
+
+# Simulation parameters
+n_simulations <- 1000
+group_sizes <- c(3, 5, 7, 9)
+
+# Initialize a list to store results
+results <- list()
+
+# Run the simulation separately for each disease_num
+for (disease in levels(visit_data$disease_num)) {
+  # Filter data for the current disease_num
+  filtered_data <- visit_data %>%
+    filter(disease_num == disease)
+  
+  for (size in group_sizes) {
+    proportions <- data.frame(
+      simulation = integer(),
+      correct = numeric(),
+      partially_correct = numeric(),
+      incorrect = numeric()
+    )
+    
+    for (sim in 1:n_simulations) {
+      # Randomly sample groups
+      if (nrow(filtered_data) >= size) {
+        sampled_groups <- filtered_data %>%
+          sample_n(size = size, replace = FALSE)
+        
+        # Compute modal diagnosis for the group
+        modal_diagnosis <- compute_modal_diagnosis(sampled_groups)
+        
+        # Classify modal diagnosis
+        diagnosis_category <- case_when(
+          modal_diagnosis == 2 ~ "correct",
+          modal_diagnosis == 1 ~ "partially_correct",
+          modal_diagnosis == 0 ~ "incorrect"
+        )
+        
+        # Update proportions
+        proportions <- proportions %>%
+          add_row(
+            simulation = sim,
+            correct = as.numeric(diagnosis_category == "correct"),
+            partially_correct = as.numeric(diagnosis_category == "partially_correct"),
+            incorrect = as.numeric(diagnosis_category == "incorrect")
+          )
+      }
+    }
+    
+    # Compute average proportions across simulations
+    avg_proportions <- proportions %>%
+      summarise(
+        correct = mean(correct),
+        partially_correct = mean(partially_correct),
+        incorrect = mean(incorrect)
+      )
+    
+    # Add group size and disease_num to the results
+    avg_proportions$group_size <- size
+    avg_proportions$disease_num <- disease
+    
+    # Store results
+    results[[paste(disease, size, sep = "_")]] <- avg_proportions
+  }
+}
+
+# Combine results into a single data frame
+results_df <- bind_rows(results)
+
+# Reshape data for ggplot2
+results_long <- results_df %>%
+  pivot_longer(cols = c(correct, partially_correct, incorrect),
+               names_to = "diagnosis_category",
+               values_to = "proportion")
+
+# Plot the results
+ggplot(results_long, aes(x = factor(group_size), y = proportion, fill = diagnosis_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~disease_num) +
+  labs(
+    title = "Proportion of Modal Diagnosis by Group Size and Disease Type",
+    x = "Group Size",
+    y = "Proportion",
+    fill = "Diagnosis Category"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+### 2.1.3 Figure 2 - Simulation: 1PL IRT model
+
+```{r}
+# Fix missing values in irtscore safely
+visit_data <- visit_data %>%
+  mutate(irtscore = replace_na(irtscore, mean(irtscore, na.rm = TRUE)))
+
+# Function to compute weighted modal diagnosis with NA handling
+compute_weighted_modal_diagnosis <- function(group) {
+  if (nrow(group) == 0) return(NA)  # Avoid missing values when group is empty
+  
+  weighted_freq <- group %>%
+    group_by(diagnosis) %>%
+    summarise(weighted_sum = sum(irtscore, na.rm = TRUE), .groups = "drop") %>%
+    arrange(desc(weighted_sum))
+  
+  # Return most weighted diagnosis, or NA if none exists
+  if (nrow(weighted_freq) == 0) return(NA)
+  return(weighted_freq$diagnosis[1])
+}
+
+# Simulation parameters
+n_simulations <- 1000
+group_sizes <- c(3, 5, 7, 9)
+
+# Initialize a list to store results
+results <- list()
+
+# Run the simulation separately for each disease_num
+for (disease in unique(visit_data$disease_num)) {
+  # Filter data for the current disease_num
+  filtered_data <- visit_data %>%
+    filter(disease_num == disease)
+
+  if (nrow(filtered_data) == 0) next  # Skip if no data for this disease
+  
+  for (size in group_sizes) {
+    if (nrow(filtered_data) < size) next  # Ensure enough cases for sampling
+
+    proportions <- data.frame(
+      simulation = integer(),
+      correct = numeric(),
+      partially_correct = numeric(),
+      incorrect = numeric()
+    )
+    
+    for (sim in 1:n_simulations) {
+      # Randomly sample groups
+      sampled_groups <- filtered_data %>%
+        sample_n(size = size, replace = FALSE)
+
+      # Compute weighted modal diagnosis
+      weighted_modal_diagnosis <- compute_weighted_modal_diagnosis(sampled_groups)
+
+      # Handle missing weighted diagnosis (prevent NAs)
+      if (is.na(weighted_modal_diagnosis)) next  # Skip if modal diagnosis is missing
+
+      # Classify diagnosis
+      diagnosis_category <- case_when(
+        weighted_modal_diagnosis == 2 ~ "correct",
+        weighted_modal_diagnosis == 1 ~ "partially_correct",
+        weighted_modal_diagnosis == 0 ~ "incorrect",
+        TRUE ~ NA_character_
+      )
+
+      # Ensure no NA in classification
+      if (!is.na(diagnosis_category)) {
+        proportions <- proportions %>%
+          add_row(
+            simulation = sim,
+            correct = as.numeric(diagnosis_category == "correct"),
+            partially_correct = as.numeric(diagnosis_category == "partially_correct"),
+            incorrect = as.numeric(diagnosis_category == "incorrect")
+          )
+      }
+    }
+    
+    # Compute average proportions safely
+    if (nrow(proportions) > 0) {
+      avg_proportions <- proportions %>%
+        summarise(
+          correct = mean(correct, na.rm = TRUE),
+          partially_correct = mean(partially_correct, na.rm = TRUE),
+          incorrect = mean(incorrect, na.rm = TRUE)
+        )
+
+      # Add metadata (group size and disease_num)
+      avg_proportions$group_size <- size
+      avg_proportions$disease_num <- disease
+
+      # Store results
+      results[[paste(disease, size, sep = "_")]] <- avg_proportions
+    }
+  }
+}
+
+# Combine results into a single data frame
+results_df <- bind_rows(results)
+
+# Ensure no missing values in final data
+results_df <- results_df %>%
+  drop_na()
+
+# Reshape data for ggplot2
+results_long <- results_df %>%
+  pivot_longer(cols = c(correct, partially_correct, incorrect),
+               names_to = "diagnosis_category",
+               values_to = "proportion")
+
+# Plot the results
+ggplot(results_long, aes(x = factor(group_size), y = proportion, fill = diagnosis_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~disease_num) +
+  labs(
+    title = "Proportion of Weighted Modal Diagnosis by Group Size and Disease Type",
+    x = "Group Size",
+    y = "Proportion",
+    fill = "Diagnosis Category"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+### 2.1.4 Figure 3. New weighting method - ML
+
+```{r}
+library(caret)  
+library(randomForest)  
+library(xgboost)  
+library(nnet)  
+library(MLmetrics)
+
+# Prepare data for ML
+ml_data <- visit_data %>%
+  select(diagnosis, irtscore) %>%
+  filter(!is.na(diagnosis))  # Remove rows with missing diagnosis
+
+# Convert diagnosis to a factor with valid names
+ml_data$diagnosis <- factor(ml_data$diagnosis, labels = c("Incorrect", "Partially_Correct", "Correct"))
+
+# Split data into training and testing sets
+set.seed(2025)
+train_index <- createDataPartition(ml_data$diagnosis, p = 0.8, list = FALSE)
+train_data <- ml_data[train_index, ]
+test_data <- ml_data[-train_index, ]
+
+# Define model training control
+control <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = multiClassSummary)
+
+# Train multiple ML models (classification)
+set.seed(2025)
+models <- list(
+  logistic = train(diagnosis ~ irtscore, data = train_data, 
+                   method = if (length(levels(train_data$diagnosis)) > 2) "multinom" else "glm", 
+                   family = if (length(levels(train_data$diagnosis)) > 2) NULL else "binomial", 
+                   trControl = control),
+  
+  random_forest = train(diagnosis ~ irtscore, data = train_data, 
+                        method = "rf", 
+                        trControl = control),
+  
+  xgboost = train(diagnosis ~ irtscore, data = train_data, 
+                  method = "xgbTree", 
+                  trControl = control)
+)
+
+# Evaluate model performance
+results <- resamples(models)
+summary(results)  # Check model accuracy
+
+# Choose the best-performing model
+best_model <- models[[which.max(sapply(models, function(m) max(m$results$Accuracy, na.rm = TRUE)))]]
+
+# Extract probability predictions dynamically
+prob_preds <- predict(best_model, newdata = visit_data, type = "prob")
+
+# Assign predicted probabilities for correct diagnosis
+visit_data <- visit_data %>%
+  mutate(pred_prob = apply(prob_preds, 1, max))  # Take max probability per row
+
+# Function to compute weighted modal diagnosis using predicted probabilities
+compute_weighted_modal_diagnosis <- function(group) {
+  # Compute weighted frequencies
+  weighted_freq <- group %>%
+    group_by(diagnosis) %>%
+    summarise(weighted_sum = sum(pred_prob, na.rm = TRUE), .groups = "drop") %>%
+    arrange(desc(weighted_sum))
+  
+  # Return the diagnosis with the highest weighted sum
+  if (nrow(weighted_freq) == 0) return(NA)  # Prevent errors when empty
+  return(weighted_freq$diagnosis[1])
+}
+
+# Simulation parameters
+n_simulations <- 1000
+group_sizes <- c(3, 5, 7, 9)
+
+# Initialize a list to store results
+results <- list()
+
+# Run the simulation separately for each disease_num
+for (disease in unique(visit_data$disease_num)) {
+  # Filter data for the current disease_num
+  filtered_data <- visit_data %>%
+    filter(disease_num == disease)
+
+  if (nrow(filtered_data) == 0) next  # Skip if no data for this disease
+  
+  for (size in group_sizes) {
+    if (nrow(filtered_data) < size) next  # Ensure enough cases for sampling
+
+    proportions <- data.frame(
+      simulation = integer(),
+      correct = numeric(),
+      partially_correct = numeric(),
+      incorrect = numeric()
+    )
+    
+    for (sim in 1:n_simulations) {
+      # Randomly sample groups
+      sampled_groups <- filtered_data %>%
+        sample_n(size = size, replace = FALSE)
+
+      # Compute weighted modal diagnosis
+      weighted_modal_diagnosis <- compute_weighted_modal_diagnosis(sampled_groups)
+
+      # Handle missing weighted diagnosis (prevent NAs)
+      if (is.na(weighted_modal_diagnosis)) next  
+
+      # Classify diagnosis
+      diagnosis_category <- case_when(
+        weighted_modal_diagnosis == 2 ~ "correct",
+        weighted_modal_diagnosis == 1 ~ "partially_correct",
+        weighted_modal_diagnosis == 0 ~ "incorrect",
+        TRUE ~ NA_character_
+      )
+
+      # Ensure no NA in classification
+      if (!is.na(diagnosis_category)) {
+        proportions <- proportions %>%
+          add_row(
+            simulation = sim,
+            correct = as.numeric(diagnosis_category == "correct"),
+            partially_correct = as.numeric(diagnosis_category == "partially_correct"),
+            incorrect = as.numeric(diagnosis_category == "incorrect")
+          )
+      }
+    }
+    
+    # Compute average proportions safely
+    if (nrow(proportions) > 0) {
+      avg_proportions <- proportions %>%
+        summarise(
+          correct = mean(correct, na.rm = TRUE),
+          partially_correct = mean(partially_correct, na.rm = TRUE),
+          incorrect = mean(incorrect, na.rm = TRUE)
+        )
+
+      # Add metadata (group size and disease_num)
+      avg_proportions$group_size <- size
+      avg_proportions$disease_num <- disease
+
+      # Store results
+      results[[paste(disease, size, sep = "_")]] <- avg_proportions
+    }
+  }
+}
+
+# Combine results into a single data frame
+results_df <- bind_rows(results)
+
+# Ensure no missing values in final data
+results_df <- results_df %>%
+  drop_na()
+
+# Reshape data for ggplot2
+results_long <- results_df %>%
+  pivot_longer(cols = c(correct, partially_correct, incorrect),
+               names_to = "diagnosis_category",
+               values_to = "proportion")
+
+# Plot the results
+ggplot(results_long, aes(x = factor(group_size), y = proportion, fill = diagnosis_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~disease_num) +
+  labs(
+    title = "Figure 3. eXtreme Gradient Boosting- Proportion of Weighted Modal Diagnosis by Group Size and Disease Type",
+    x = "Group Size",
+    y = "Proportion",
+    fill = "Diagnosis Category"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
